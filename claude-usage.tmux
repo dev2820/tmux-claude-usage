@@ -22,6 +22,7 @@ set_default "@claude_usage_plan" "pro"
 set_default "@claude_usage_format" "full"
 set_default "@claude_usage_colors" "on"
 set_default "@claude_usage_cache_ttl" "30"
+set_default "@claude_usage_custom_budget" ""
 
 # Check Python availability
 if ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then

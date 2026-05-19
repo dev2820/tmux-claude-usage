@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Claude Code token usage monitor for tmux status bar.
+"""Claude Code usage monitor for tmux status bar.
 
-Reads Claude Code JSONL session logs and calculates token usage
-within the current 5-hour window against plan limits.
+Reads Claude Code JSONL session logs and estimates cost-based usage
+within the current 5-hour window against plan spend limits.
 
 No external dependencies — uses Python standard library only.
 """
@@ -15,11 +15,45 @@ import sys
 from datetime import datetime, timezone, timedelta
 
 
-# Plan token limits (matches claude-monitor definitions)
+# API pricing per 1M tokens (USD) — https://www.anthropic.com/pricing
+MODEL_PRICING = {
+    "claude-opus-4-6": {
+        "input": 15.0,
+        "output": 75.0,
+        "cache_creation": 18.75,
+        "cache_read": 1.50,
+    },
+    "claude-sonnet-4-6": {
+        "input": 3.0,
+        "output": 15.0,
+        "cache_creation": 3.75,
+        "cache_read": 0.30,
+    },
+    "claude-haiku-4-5-20251001": {
+        "input": 0.80,
+        "output": 4.0,
+        "cache_creation": 1.0,
+        "cache_read": 0.08,
+    },
+}
+
+# Fallback pricing when model is unrecognized — use Opus (most expensive)
+# to avoid under-counting.
+_FALLBACK_PRICING = MODEL_PRICING["claude-opus-4-6"]
+
+# Estimated spend budget per 5-hour window (USD).
+# Anthropic does not publish exact numbers.  These are community-derived
+# estimates calibrated against observed rate-limit behaviour.
+# Ref: GitHub issues #24147, #49302, #54750; Portkey/TrueFoundry analyses.
+# Updated 2026-05 after Anthropic doubled all plan limits.
+#
+# Calibration: a Max5 subscriber used ~$40 in a 5h window without hitting
+# rate limits, so the budget must be well above $40.  Estimates below
+# assume roughly $50 for Max5 (= 5× Pro $10).
 PLAN_LIMITS = {
-    "pro": {"tokens": 19_000, "label": "Pro"},
-    "max5": {"tokens": 88_000, "label": "Max5"},
-    "max20": {"tokens": 220_000, "label": "Max20"},
+    "pro":   {"budget": 10.00,  "label": "Pro"},
+    "max5":  {"budget": 50.00,  "label": "Max5"},
+    "max20": {"budget": 200.00, "label": "Max20"},
 }
 
 WINDOW_HOURS = 5
@@ -28,7 +62,6 @@ CLAUDE_DIR = os.path.expanduser("~/.claude/projects")
 
 def parse_timestamp(ts_str):
     """Parse ISO 8601 timestamp string to datetime."""
-    # Handle both 'Z' suffix and '+00:00' formats
     ts_str = ts_str.replace("Z", "+00:00")
     try:
         return datetime.fromisoformat(ts_str)
@@ -36,15 +69,33 @@ def parse_timestamp(ts_str):
         return None
 
 
-def collect_tokens(hours_back=WINDOW_HOURS):
-    """Read all JSONL files and sum tokens from the last N hours."""
+def _resolve_pricing(model_str):
+    """Return pricing dict for a model string, with prefix matching."""
+    if model_str in MODEL_PRICING:
+        return MODEL_PRICING[model_str]
+    # Prefix match (e.g. "claude-opus-4-6-20260101" → opus pricing)
+    for key, pricing in MODEL_PRICING.items():
+        if model_str.startswith(key.rsplit("-", 1)[0]):
+            return pricing
+    return _FALLBACK_PRICING
+
+
+def collect_usage(hours_back=WINDOW_HOURS):
+    """Read all JSONL files and compute estimated cost in the last N hours.
+
+    Deduplicates by message ID (streaming writes the same message multiple
+    times; we keep only the last entry per ID).
+
+    Returns (total_cost_usd, total_messages).
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
-    total_tokens = 0
+    # {message_id: (model, input, output, cache_creation, cache_read)}
+    seen = {}
     jsonl_pattern = os.path.join(CLAUDE_DIR, "*", "*.jsonl")
-    files = glob.glob(jsonl_pattern)
+    subagent_pattern = os.path.join(CLAUDE_DIR, "*", "*", "subagents", "*.jsonl")
+    files = glob.glob(jsonl_pattern) + glob.glob(subagent_pattern)
 
     for filepath in files:
-        # Skip files not modified recently (optimization)
         try:
             mtime = os.path.getmtime(filepath)
             if datetime.fromtimestamp(mtime, tz=timezone.utc) < cutoff:
@@ -63,41 +114,47 @@ def collect_tokens(hours_back=WINDOW_HOURS):
                     except json.JSONDecodeError:
                         continue
 
-                    # Only count assistant messages with usage data
                     if entry.get("type") != "assistant":
                         continue
 
-                    usage = entry.get("message", {}).get("usage")
+                    msg = entry.get("message", {})
+                    usage = msg.get("usage")
                     if not usage:
                         continue
 
-                    # Check timestamp is within window
                     ts = parse_timestamp(entry.get("timestamp", ""))
                     if ts is None or ts < cutoff:
                         continue
 
-                    # Sum input + output tokens only.
-                    # Cache tokens (cache_creation, cache_read) are excluded
-                    # because plan limits (Pro=19K, Max5=88K, Max20=220K)
-                    # correspond to input+output tokens only.
-                    tokens = (
-                        usage.get("input_tokens", 0)
-                        + usage.get("output_tokens", 0)
+                    msg_id = msg.get("id")
+                    seen[msg_id] = (
+                        msg.get("model", ""),
+                        usage.get("input_tokens", 0),
+                        usage.get("output_tokens", 0),
+                        usage.get("cache_creation_input_tokens", 0),
+                        usage.get("cache_read_input_tokens", 0),
                     )
-                    total_tokens += tokens
         except (OSError, IOError):
             continue
 
-    return total_tokens
+    total_cost = 0.0
+    for _id, (model, inp, out, cc, cr) in seen.items():
+        p = _resolve_pricing(model)
+        total_cost += (
+            inp * p["input"]
+            + out * p["output"]
+            + cc * p["cache_creation"]
+            + cr * p["cache_read"]
+        ) / 1_000_000
+
+    return total_cost, len(seen)
 
 
-def format_tokens_short(tokens):
-    """Format token count in human-readable short form."""
-    if tokens >= 1_000_000:
-        return f"{tokens / 1_000_000:.1f}M"
-    if tokens >= 1_000:
-        return f"{tokens / 1_000:.1f}K"
-    return str(tokens)
+def format_cost_short(cost):
+    """Format dollar amount in short form."""
+    if cost >= 1.0:
+        return f"${cost:.1f}"
+    return f"${cost:.2f}"
 
 
 def build_progress_bar(pct, width=8):
@@ -107,11 +164,12 @@ def build_progress_bar(pct, width=8):
     return "█" * filled + "░" * (width - filled)
 
 
-def format_output(plan_label, pct, remaining_min, fmt="full", use_color=True):
+def format_output(plan_label, pct, cost, budget, remaining_min,
+                  fmt="full", use_color=True):
     """Format the tmux status string."""
-    pct_int = int(min(pct, 100))
+    pct_capped = min(pct, 999)
+    pct_int = int(min(pct_capped, 100))
 
-    # Color based on usage level
     if use_color:
         if pct >= 85:
             cs, ce = "#[fg=red]", "#[fg=default]"
@@ -133,12 +191,14 @@ def format_output(plan_label, pct, remaining_min, fmt="full", use_color=True):
     else:
         time_str = ""
 
+    cost_str = format_cost_short(cost)
+
     if fmt == "short":
-        return f"{cs}{plan_label} {pct_int}%{time_str}{ce}"
+        return f"{cs}{plan_label} {pct_int}% {cost_str}{time_str}{ce}"
 
     # full format
     bar = build_progress_bar(pct)
-    return f"{cs}{plan_label} {pct_int}% {bar}{time_str}{ce}"
+    return f"{cs}{plan_label} {pct_int}% {bar} {cost_str}{time_str}{ce}"
 
 
 def main():
@@ -150,10 +210,10 @@ def main():
         help="Subscription plan (default: pro)",
     )
     parser.add_argument(
-        "--limit",
-        type=int,
+        "--budget",
+        type=float,
         default=None,
-        help="Custom token limit (only used with --plan custom)",
+        help="Custom spend budget in USD (only used with --plan custom)",
     )
     parser.add_argument(
         "--format",
@@ -169,37 +229,33 @@ def main():
     )
     args = parser.parse_args()
 
-    # Determine token limit
+    # Determine spend budget
     if args.plan == "custom":
-        if args.limit is None:
-            token_limit = 44_000  # default custom limit
-        else:
-            token_limit = args.limit
+        budget = args.budget if args.budget is not None else 10.0
         plan_label = "Custom"
     else:
         plan_info = PLAN_LIMITS[args.plan]
-        token_limit = plan_info["tokens"]
+        budget = plan_info["budget"]
         plan_label = plan_info["label"]
 
-    # Collect tokens
-    total_tokens = collect_tokens()
+    # Collect cost-based usage
+    total_cost, _ = collect_usage()
 
     # Calculate percentage
-    if token_limit > 0:
-        pct = (total_tokens / token_limit) * 100
+    if budget > 0:
+        pct = (total_cost / budget) * 100
     else:
         pct = 0
 
     # Calculate remaining time in the 5-hour window
-    # The window resets every 5 hours from an epoch-aligned boundary
     now = datetime.now(timezone.utc)
-    # Approximate: time remaining = 5h - (minutes since last 5h boundary)
     epoch_minutes = int(now.timestamp() / 60)
     minutes_into_window = epoch_minutes % (WINDOW_HOURS * 60)
     remaining_min = (WINDOW_HOURS * 60) - minutes_into_window
 
     output = format_output(
-        plan_label, pct, remaining_min, fmt=args.fmt, use_color=not args.no_color
+        plan_label, pct, total_cost, budget, remaining_min,
+        fmt=args.fmt, use_color=not args.no_color,
     )
     print(output, end="")
     return 0

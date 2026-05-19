@@ -53,7 +53,7 @@ fi
 PLAN=$(get_tmux_option "@claude_usage_plan" "pro")
 FORMAT=$(get_tmux_option "@claude_usage_format" "full")
 COLORS=$(get_tmux_option "@claude_usage_colors" "on")
-CUSTOM_LIMIT=$(get_tmux_option "@claude_usage_custom_limit" "")
+CUSTOM_BUDGET=$(get_tmux_option "@claude_usage_custom_budget" "")
 CACHE_TTL_OPT=$(get_tmux_option "@claude_usage_cache_ttl" "")
 
 # Override cache TTL if set via tmux option
@@ -67,8 +67,8 @@ if [ "$COLORS" = "off" ]; then
     ARGS="$ARGS --no-color"
 fi
 
-if [ -n "$CUSTOM_LIMIT" ] && [ "$PLAN" = "custom" ]; then
-    ARGS="$ARGS --limit $CUSTOM_LIMIT"
+if [ -n "$CUSTOM_BUDGET" ] && [ "$PLAN" = "custom" ]; then
+    ARGS="$ARGS --budget $CUSTOM_BUDGET"
 fi
 
 # Run Python script and cache result

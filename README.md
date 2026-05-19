@@ -1,18 +1,21 @@
 # tmux-claude-usage
 
-Claude Code token usage monitor for the tmux status bar.
+Claude Code usage monitor for the tmux status bar.
 
-Shows your current plan, usage percentage, progress bar, and time remaining in the 5-hour window — all at a glance.
+Shows your current plan, estimated usage percentage, progress bar, cost, and time remaining in the 5-hour window — all at a glance.
 
 ```
-Pro 98% ████████ 2h03m    # red - approaching limit
-Max5 52% ████░░░░ 3h21m   # yellow - moderate usage
-Max20 8% ░░░░░░░░ 4h50m   # green - plenty of room
+Pro 98% ████████ $9.4 2h03m    # red - approaching limit
+Max5 52% ████░░░░ $24.1 3h21m  # yellow - moderate usage
+Max20 8% ░░░░░░░░ $15.2 4h50m  # green - plenty of room
 ```
 
 ## Features
 
-- Real-time token usage tracking from Claude Code session logs
+- **Cost-based usage tracking** from Claude Code session logs
+- Per-model API pricing (Opus, Sonnet, Haiku) with all token types
+- Message-level deduplication (handles JSONL streaming duplicates)
+- Subagent log scanning
 - Color-coded status (green/yellow/red) based on usage level
 - File-based caching (30s TTL) for minimal overhead
 - Three display formats: `full`, `short`, `minimal`
@@ -66,13 +69,13 @@ tmux_conf_theme_status_right=" #{claude_usage} | %R | %d %b "
 
 All options are set via tmux options:
 
-| Option                       | Default | Values                           | Description                 |
-| ---------------------------- | ------- | -------------------------------- | --------------------------- |
-| `@claude_usage_plan`         | `pro`   | `pro`, `max5`, `max20`, `custom` | Subscription plan           |
-| `@claude_usage_format`       | `full`  | `full`, `short`, `minimal`       | Display format              |
-| `@claude_usage_colors`       | `on`    | `on`, `off`                      | Color output                |
-| `@claude_usage_cache_ttl`    | `30`    | seconds                          | Cache duration              |
-| `@claude_usage_custom_limit` | —       | integer                          | Token limit for custom plan |
+| Option                        | Default | Values                           | Description                        |
+| ----------------------------- | ------- | -------------------------------- | ---------------------------------- |
+| `@claude_usage_plan`          | `pro`   | `pro`, `max5`, `max20`, `custom` | Subscription plan                  |
+| `@claude_usage_format`        | `full`  | `full`, `short`, `minimal`       | Display format                     |
+| `@claude_usage_colors`        | `on`    | `on`, `off`                      | Color output                       |
+| `@claude_usage_cache_ttl`     | `30`    | seconds                          | Cache duration                     |
+| `@claude_usage_custom_budget` | —       | float (USD)                      | Spend budget for custom plan       |
 
 Example:
 
@@ -83,8 +86,8 @@ set -g @claude_usage_format 'short'
 
 ### Display Formats
 
-- **full**: `Pro 52% ████░░░░ 2h31m`
-- **short**: `Pro 52% 2h31m`
+- **full**: `Pro 52% ████░░░░ $4.8 2h31m`
+- **short**: `Pro 52% $4.8 2h31m`
 - **minimal**: `52%`
 
 ### Color Thresholds
@@ -95,21 +98,26 @@ set -g @claude_usage_format 'short'
 | 60-84% | Yellow | Moderate usage    |
 | >= 85% | Red    | Approaching limit |
 
-### Plan Limits
+### Estimated Plan Budgets
 
-| Plan   | Token Limit  |
+| Plan   | Budget / 5h  |
 | ------ | ------------ |
-| Pro    | 19,000       |
-| Max5   | 88,000       |
-| Max20  | 220,000      |
+| Pro    | ~$10         |
+| Max5   | ~$50         |
+| Max20  | ~$200        |
 | Custom | configurable |
+
+> **Note:** Anthropic does not publish exact rate limits. Budgets above are
+> community-derived estimates. If the percentage feels off compared to your
+> actual rate-limit experience, adjust with `--plan custom --budget <USD>`.
 
 ## How It Works
 
-1. Reads Claude Code session logs (`~/.claude/projects/*/*.jsonl`)
-2. Sums `input_tokens + output_tokens` from the last 5 hours
-3. Calculates percentage against your plan's token limit
-4. Outputs a formatted string with tmux color codes
+1. Reads Claude Code session logs (`~/.claude/projects/**/*.jsonl`)
+2. Deduplicates by message ID (JSONL contains streaming duplicates)
+3. Computes estimated API cost using per-model pricing for all token types (input, output, cache creation, cache read)
+4. Calculates percentage against your plan's estimated spend budget
+5. Outputs a formatted string with tmux color codes
 
 Cache file is stored at `/tmp/tmux-claude-usage.cache` and refreshed every 30 seconds (configurable).
 
