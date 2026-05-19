@@ -150,13 +150,6 @@ def collect_usage(hours_back=WINDOW_HOURS):
     return total_cost, len(seen)
 
 
-def format_cost_short(cost):
-    """Format dollar amount in short form."""
-    if cost >= 1.0:
-        return f"${cost:.1f}"
-    return f"${cost:.2f}"
-
-
 def build_progress_bar(pct, width=8):
     """Build a Unicode progress bar."""
     filled = int(pct / (100 / width))
@@ -164,7 +157,7 @@ def build_progress_bar(pct, width=8):
     return "█" * filled + "░" * (width - filled)
 
 
-def format_output(plan_label, pct, cost, budget, remaining_min,
+def format_output(plan_label, pct, remaining_min,
                   fmt="full", use_color=True):
     """Format the tmux status string."""
     pct_capped = min(pct, 999)
@@ -191,14 +184,12 @@ def format_output(plan_label, pct, cost, budget, remaining_min,
     else:
         time_str = ""
 
-    cost_str = format_cost_short(cost)
-
     if fmt == "short":
-        return f"{cs}{plan_label} {pct_int}% {cost_str}{time_str}{ce}"
+        return f"{cs}{plan_label} {pct_int}%{time_str}{ce}"
 
     # full format
     bar = build_progress_bar(pct)
-    return f"{cs}{plan_label} {pct_int}% {bar} {cost_str}{time_str}{ce}"
+    return f"{cs}{plan_label} {pct_int}% {bar}{time_str}{ce}"
 
 
 def main():
@@ -254,7 +245,7 @@ def main():
     remaining_min = (WINDOW_HOURS * 60) - minutes_into_window
 
     output = format_output(
-        plan_label, pct, total_cost, budget, remaining_min,
+        plan_label, pct, remaining_min,
         fmt=args.fmt, use_color=not args.no_color,
     )
     print(output, end="")

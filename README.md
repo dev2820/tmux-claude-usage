@@ -2,12 +2,12 @@
 
 Claude Code usage monitor for the tmux status bar.
 
-Shows your current plan, estimated usage percentage, progress bar, cost, and time remaining in the 5-hour window — all at a glance.
+Shows your current plan, estimated usage percentage, progress bar, and time remaining in the 5-hour window — all at a glance.
 
 ```
-Pro 98% ████████ $9.4 2h03m    # red - approaching limit
-Max5 52% ████░░░░ $24.1 3h21m  # yellow - moderate usage
-Max20 8% ░░░░░░░░ $15.2 4h50m  # green - plenty of room
+Pro 98% ████████ 2h03m    # red - approaching limit
+Max5 52% ████░░░░ 3h21m   # yellow - moderate usage
+Max20 8% ░░░░░░░░ 4h50m   # green - plenty of room
 ```
 
 ## Features
@@ -86,8 +86,8 @@ set -g @claude_usage_format 'short'
 
 ### Display Formats
 
-- **full**: `Pro 52% ████░░░░ $4.8 2h31m`
-- **short**: `Pro 52% $4.8 2h31m`
+- **full**: `Pro 52% ████░░░░ 2h31m`
+- **short**: `Pro 52% 2h31m`
 - **minimal**: `52%`
 
 ### Color Thresholds
