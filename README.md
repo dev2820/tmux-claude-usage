@@ -89,7 +89,7 @@ set -g @claude_usage_format 'short'
 - **full**: `Pro 52% ████░░░░ 2h31m`
 - **short**: `Pro 52% 2h31m`
 - **minimal**: `52%`
-- **pie**: `{p:52} Pro 52% 2h31m` — uses [Datatype](https://github.com/franktisellano/datatype) font to render a pie chart glyph (requires the font installed and terminal ligature support)
+- **pie**: `Pro {p:52} 52% 2h31m` — uses [Datatype](https://github.com/franktisellano/datatype) font to render a pie chart glyph (requires the font installed and terminal ligature support)
 
 ### Color Thresholds
 

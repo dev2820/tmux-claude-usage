@@ -185,7 +185,7 @@ def format_output(plan_label, pct, remaining_min,
         time_str = ""
 
     if fmt == "pie":
-        return f"{cs}{{p:{pct_int}}} {plan_label} {pct_int}%{time_str}{ce}"
+        return f"{cs}{plan_label} {{p:{pct_int}}} {pct_int}%{time_str}{ce}"
 
     if fmt == "short":
         return f"{cs}{plan_label} {pct_int}%{time_str}{ce}"
