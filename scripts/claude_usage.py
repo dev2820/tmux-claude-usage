@@ -184,6 +184,9 @@ def format_output(plan_label, pct, remaining_min,
     else:
         time_str = ""
 
+    if fmt == "pie":
+        return f"{cs}{{p:{pct_int}}} {plan_label} {pct_int}%{time_str}{ce}"
+
     if fmt == "short":
         return f"{cs}{plan_label} {pct_int}%{time_str}{ce}"
 
@@ -208,7 +211,7 @@ def main():
     )
     parser.add_argument(
         "--format",
-        choices=["full", "short", "minimal"],
+        choices=["full", "short", "minimal", "pie"],
         default="full",
         dest="fmt",
         help="Output format (default: full)",
