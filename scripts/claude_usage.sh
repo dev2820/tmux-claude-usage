@@ -36,7 +36,7 @@ if [ -f "$CACHE_FILE" ]; then
     fi
 fi
 
-# Check Python availability
+# Check Python availability (needed to parse ccusage JSON output)
 PYTHON=""
 if command -v python3 >/dev/null 2>&1; then
     PYTHON="python3"
@@ -46,6 +46,12 @@ fi
 
 if [ -z "$PYTHON" ]; then
     printf "[py?]"
+    exit 0
+fi
+
+# Check ccusage availability (via bunx, npx, or global install)
+if ! command -v bunx >/dev/null 2>&1 && ! command -v npx >/dev/null 2>&1 && ! command -v ccusage >/dev/null 2>&1; then
+    printf "[ccusage?]"
     exit 0
 fi
 

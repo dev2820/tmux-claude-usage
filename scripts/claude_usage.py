@@ -1,160 +1,79 @@
 #!/usr/bin/env python3
 """Claude Code usage monitor for tmux status bar.
 
-Reads Claude Code JSONL session logs and estimates cost-based usage
-within the current 5-hour window against plan spend limits.
+Uses ccusage CLI (https://ccusage.com/) to read the current 5-hour
+billing window and displays cost-based usage against plan spend limits.
 
-No external dependencies — uses Python standard library only.
+Requires: ccusage (npm/bun — e.g. `bunx ccusage`)
 """
 
 import argparse
-import glob
 import json
 import os
+import subprocess
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
-
-# API pricing per 1M tokens (USD) — https://www.anthropic.com/pricing
-MODEL_PRICING = {
-    "claude-opus-4-6": {
-        "input": 15.0,
-        "output": 75.0,
-        "cache_creation": 18.75,
-        "cache_read": 1.50,
-    },
-    "claude-sonnet-4-6": {
-        "input": 3.0,
-        "output": 15.0,
-        "cache_creation": 3.75,
-        "cache_read": 0.30,
-    },
-    "claude-haiku-4-5-20251001": {
-        "input": 0.80,
-        "output": 4.0,
-        "cache_creation": 1.0,
-        "cache_read": 0.08,
-    },
-}
-
-# Fallback pricing when model is unrecognized — use Opus (most expensive)
-# to avoid under-counting.
-_FALLBACK_PRICING = MODEL_PRICING["claude-opus-4-6"]
 
 # Estimated spend budget per 5-hour window (USD).
-# Anthropic does not publish exact numbers.  These are community-derived
-# estimates calibrated against observed rate-limit behaviour.
-# Ref: GitHub issues #24147, #49302, #54750; Portkey/TrueFoundry analyses.
-# Updated 2026-05 after Anthropic doubled all plan limits.
-#
-# Calibration: a Max5 subscriber used ~$40 in a 5h window without hitting
-# rate limits, so the budget must be well above $40.  Estimates below
-# assume roughly $50 for Max5 (= 5× Pro $10).
 PLAN_LIMITS = {
     "pro":   {"budget": 10.00,  "label": "Pro"},
     "max5":  {"budget": 50.00,  "label": "Max5"},
     "max20": {"budget": 200.00, "label": "Max20"},
 }
 
-WINDOW_HOURS = 5
-CLAUDE_DIR = os.path.expanduser("~/.claude/projects")
+
+def _find_ccusage_runner():
+    """Return a command prefix list for running ccusage."""
+    for cmd in ["bunx", "npx"]:
+        if _which(cmd):
+            return [cmd, "ccusage"]
+    # Try ccusage directly (global install)
+    if _which("ccusage"):
+        return ["ccusage"]
+    return None
 
 
-def parse_timestamp(ts_str):
-    """Parse ISO 8601 timestamp string to datetime."""
-    ts_str = ts_str.replace("Z", "+00:00")
+def _which(cmd):
+    """Check if a command is available on PATH."""
+    from shutil import which
+    return which(cmd) is not None
+
+
+def get_active_block(runner):
+    """Run ccusage claude blocks --json and return the active block dict."""
+    cmd = runner + ["claude", "blocks", "--json"]
     try:
-        return datetime.fromisoformat(ts_str)
-    except (ValueError, TypeError):
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
         return None
 
+    if result.returncode != 0:
+        return None
 
-def _resolve_pricing(model_str):
-    """Return pricing dict for a model string, with prefix matching."""
-    if model_str in MODEL_PRICING:
-        return MODEL_PRICING[model_str]
-    # Prefix match (e.g. "claude-opus-4-6-20260101" → opus pricing)
-    for key, pricing in MODEL_PRICING.items():
-        if model_str.startswith(key.rsplit("-", 1)[0]):
-            return pricing
-    return _FALLBACK_PRICING
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
 
+    blocks = data.get("blocks", [])
+    for block in blocks:
+        if block.get("isActive"):
+            return block
 
-def collect_usage(hours_back=WINDOW_HOURS):
-    """Read all JSONL files and compute estimated cost in the last N hours.
-
-    Deduplicates by message ID (streaming writes the same message multiple
-    times; we keep only the last entry per ID).
-
-    Returns (total_cost_usd, total_messages).
-    """
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
-    # {message_id: (model, input, output, cache_creation, cache_read)}
-    seen = {}
-    jsonl_pattern = os.path.join(CLAUDE_DIR, "*", "*.jsonl")
-    subagent_pattern = os.path.join(CLAUDE_DIR, "*", "*", "subagents", "*.jsonl")
-    files = glob.glob(jsonl_pattern) + glob.glob(subagent_pattern)
-
-    for filepath in files:
-        try:
-            mtime = os.path.getmtime(filepath)
-            if datetime.fromtimestamp(mtime, tz=timezone.utc) < cutoff:
-                continue
-        except OSError:
-            continue
-
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-
-                    if entry.get("type") != "assistant":
-                        continue
-
-                    msg = entry.get("message", {})
-                    usage = msg.get("usage")
-                    if not usage:
-                        continue
-
-                    ts = parse_timestamp(entry.get("timestamp", ""))
-                    if ts is None or ts < cutoff:
-                        continue
-
-                    msg_id = msg.get("id")
-                    seen[msg_id] = (
-                        msg.get("model", ""),
-                        usage.get("input_tokens", 0),
-                        usage.get("output_tokens", 0),
-                        usage.get("cache_creation_input_tokens", 0),
-                        usage.get("cache_read_input_tokens", 0),
-                    )
-        except (OSError, IOError):
-            continue
-
-    total_cost = 0.0
-    for _id, (model, inp, out, cc, cr) in seen.items():
-        p = _resolve_pricing(model)
-        total_cost += (
-            inp * p["input"]
-            + out * p["output"]
-            + cc * p["cache_creation"]
-            + cr * p["cache_read"]
-        ) / 1_000_000
-
-    return total_cost, len(seen)
+    return None
 
 
 def build_progress_bar(pct, width=8):
     """Build a Unicode progress bar."""
     filled = int(pct / (100 / width))
     filled = max(0, min(filled, width))
-    return "█" * filled + "░" * (width - filled)
+    return "\u2588" * filled + "\u2591" * (width - filled)
 
 
 def format_output(plan_label, pct, remaining_min,
@@ -232,20 +151,28 @@ def main():
         budget = plan_info["budget"]
         plan_label = plan_info["label"]
 
-    # Collect cost-based usage
-    total_cost, _ = collect_usage()
+    # Find ccusage runner
+    runner = _find_ccusage_runner()
+    if runner is None:
+        print("[ccusage?]", end="")
+        return 1
+
+    # Get current billing window from ccusage
+    block = get_active_block(runner)
+    if block is None:
+        # No active block — usage is 0
+        total_cost = 0.0
+        remaining_min = 0
+    else:
+        total_cost = block.get("costUSD", 0.0)
+        projection = block.get("projection") or {}
+        remaining_min = int(projection.get("remainingMinutes", 0))
 
     # Calculate percentage
     if budget > 0:
         pct = (total_cost / budget) * 100
     else:
         pct = 0
-
-    # Calculate remaining time in the 5-hour window
-    now = datetime.now(timezone.utc)
-    epoch_minutes = int(now.timestamp() / 60)
-    minutes_into_window = epoch_minutes % (WINDOW_HOURS * 60)
-    remaining_min = (WINDOW_HOURS * 60) - minutes_into_window
 
     output = format_output(
         plan_label, pct, remaining_min,

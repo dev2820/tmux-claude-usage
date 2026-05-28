@@ -12,20 +12,17 @@ Max20 8% ░░░░░░░░ 4h50m   # green - plenty of room
 
 ## Features
 
-- **Cost-based usage tracking** from Claude Code session logs
-- Per-model API pricing (Opus, Sonnet, Haiku) with all token types
-- Message-level deduplication (handles JSONL streaming duplicates)
-- Subagent log scanning
+- **Cost-based usage tracking** powered by [ccusage](https://ccusage.com/)
 - Color-coded status (green/yellow/red) based on usage level
 - File-based caching (30s TTL) for minimal overhead
 - Four display formats: `full`, `short`, `minimal`, `pie`
 - Supports Pro, Max5, Max20, and custom plans
-- Zero external dependencies — Python standard library only
 
 ## Requirements
 
 - tmux (with or without TPM)
 - Python 3.6+
+- [ccusage](https://ccusage.com/) — available via `bunx ccusage`, `npx ccusage`, or global install
 
 ## Installation
 
@@ -114,11 +111,10 @@ set -g @claude_usage_format 'short'
 
 ## How It Works
 
-1. Reads Claude Code session logs (`~/.claude/projects/**/*.jsonl`)
-2. Deduplicates by message ID (JSONL contains streaming duplicates)
-3. Computes estimated API cost using per-model pricing for all token types (input, output, cache creation, cache read)
-4. Calculates percentage against your plan's estimated spend budget
-5. Outputs a formatted string with tmux color codes
+1. Runs `ccusage claude blocks --json` to get the current 5-hour billing window
+2. Reads `costUSD` and remaining time from the active block
+3. Calculates percentage against your plan's estimated spend budget
+4. Outputs a formatted string with tmux color codes
 
 Cache file is stored at `/tmp/tmux-claude-usage.cache` and refreshed every 30 seconds (configurable).
 
